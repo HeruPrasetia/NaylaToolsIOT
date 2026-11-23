@@ -1,0 +1,109 @@
+#include <ArduinoJson.h>
+#include <LittleFS.h>
+
+const char* CONFIG_FILE = "/database.json";
+
+String readLine(const char* prompt) {
+  Serial.println(prompt);
+  while (!Serial.available()) {
+    delay(10);
+  }
+
+  String value = Serial.readStringUntil('\n');
+  if (value.endsWith("\r")) {
+    value.remove(value.length() - 1);
+  }
+  return value;
+}
+
+bool mountLittleFS() {
+  if (LittleFS.begin()) {
+    return true;
+  }
+
+  Serial.println("LittleFS gagal di-mount. Ketik FORMAT untuk format filesystem baru.");
+  Serial.println("PERINGATAN: format akan menghapus seluruh data LittleFS.");
+  String confirmation = readLine("Ketik FORMAT untuk lanjut:");
+  confirmation.trim();
+  if (confirmation != "FORMAT") {
+    Serial.println("Format dibatalkan.");
+    return false;
+  }
+
+  if (!LittleFS.format() || !LittleFS.begin()) {
+    Serial.println("Gagal format atau mount LittleFS.");
+    return false;
+  }
+  return true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.setTimeout(120000);
+  delay(500);
+  Serial.println("\n=== Inject Konfigurasi Device ke LittleFS ===");
+  Serial.println("Set Serial Monitor ke 115200 baud dan line ending Newline.");
+
+  if (!mountLittleFS()) {
+    return;
+  }
+
+  if (LittleFS.exists(CONFIG_FILE)) {
+    String confirmation = readLine("/database.json sudah ada. Ketik OVERWRITE untuk menggantinya:");
+    confirmation.trim();
+    if (confirmation != "OVERWRITE") {
+      Serial.println("Penulisan konfigurasi dibatalkan.");
+      return;
+    }
+  }
+
+  String wifiSSID = readLine("Masukkan SSID WiFi:");
+  String wifiPassword = readLine("Masukkan password WiFi (kosongkan untuk WiFi tanpa password):");
+  String token = readLine("Masukkan token terbaru yang terdaftar untuk device ini:");
+  token.trim();
+
+  if (wifiSSID.length() == 0 || wifiSSID.length() > 32) {
+    Serial.println("SSID harus berisi 1-32 byte. Konfigurasi tidak disimpan.");
+    return;
+  }
+  if (wifiPassword.length() != 0 && (wifiPassword.length() < 8 || wifiPassword.length() > 63)) {
+    Serial.println("Password WiFi harus berisi 8-63 byte, atau kosong untuk jaringan terbuka.");
+    return;
+  }
+  if (token.length() == 0 || token.length() > 768) {
+    Serial.println("Token wajib diisi dan maksimal 768 byte. Konfigurasi tidak disimpan.");
+    return;
+  }
+
+  StaticJsonDocument<1024> config;
+  config["token"] = token;
+  config["wifissid"] = wifiSSID;
+  config["wifipwd"] = wifiPassword;
+  config["conter"] = 0;
+  if (config.overflowed()) {
+    Serial.println("Konfigurasi terlalu besar untuk disimpan.");
+    return;
+  }
+
+  File configFile = LittleFS.open(CONFIG_FILE, "w");
+  if (!configFile) {
+    Serial.println("Gagal membuka /database.json untuk ditulis.");
+    return;
+  }
+
+  size_t expectedBytes = measureJson(config);
+  size_t bytesWritten = serializeJson(config, configFile);
+  size_t newlineBytes = configFile.println();
+  configFile.close();
+  if (bytesWritten != expectedBytes || newlineBytes == 0) {
+    Serial.println("Gagal menyimpan konfigurasi secara lengkap.");
+    return;
+  }
+
+  Serial.println("Konfigurasi berhasil disimpan ke /database.json.");
+  Serial.println("Sekarang upload Conveyor.ino tanpa menghapus atau memformat LittleFS.");
+}
+
+void loop() {
+  delay(1000);
+}
