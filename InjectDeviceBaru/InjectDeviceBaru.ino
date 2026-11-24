@@ -5,15 +5,29 @@ const char* CONFIG_FILE = "/database.json";
 
 String readLine(const char* prompt) {
   Serial.println(prompt);
-  while (!Serial.available()) {
-    delay(10);
-  }
 
-  String value = Serial.readStringUntil('\n');
-  if (value.endsWith("\r")) {
-    value.remove(value.length() - 1);
+  String value;
+  unsigned long lastByteAt = 0;
+  while (true) {
+    while (Serial.available() > 0) {
+      char character = static_cast<char>(Serial.read());
+      if (character == '\n') {
+        if (value.endsWith("\r")) {
+          value.remove(value.length() - 1);
+        }
+        return value;
+      }
+      if (character != '\r') {
+        value += character;
+      }
+      lastByteAt = millis();
+    }
+
+    if (value.length() > 0 && millis() - lastByteAt >= 1500) {
+      return value;
+    }
+    delay(1);
   }
-  return value;
 }
 
 bool mountLittleFS() {
@@ -39,7 +53,6 @@ bool mountLittleFS() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(120000);
   delay(500);
   Serial.println("\n=== Inject Konfigurasi Device ke LittleFS ===");
   Serial.println("Set Serial Monitor ke 115200 baud dan line ending Newline.");
@@ -61,6 +74,7 @@ void setup() {
   String wifiPassword = readLine("Masukkan password WiFi (kosongkan untuk WiFi tanpa password):");
   String token = readLine("Masukkan token terbaru yang terdaftar untuk device ini:");
   token.trim();
+  Serial.printf("Token diterima (%u karakter).\n", static_cast<unsigned int>(token.length()));
 
   if (wifiSSID.length() == 0 || wifiSSID.length() > 32) {
     Serial.println("SSID harus berisi 1-32 byte. Konfigurasi tidak disimpan.");
@@ -85,6 +99,7 @@ void setup() {
     return;
   }
 
+  Serial.println("Menyimpan konfigurasi ke LittleFS...");
   File configFile = LittleFS.open(CONFIG_FILE, "w");
   if (!configFile) {
     Serial.println("Gagal membuka /database.json untuk ditulis.");
@@ -101,7 +116,7 @@ void setup() {
   }
 
   Serial.println("Konfigurasi berhasil disimpan ke /database.json.");
-  Serial.println("Sekarang upload Conveyor.ino tanpa menghapus atau memformat LittleFS.");
+  Serial.println("Sekarang upload Conveyor.ino atau Finger.ino tanpa menghapus atau memformat LittleFS.");
 }
 
 void loop() {

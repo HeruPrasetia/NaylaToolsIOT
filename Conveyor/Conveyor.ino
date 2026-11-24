@@ -7,6 +7,8 @@
 #include <MD_MAX72xx.h>
 #include <SPI.h>
 #include <string.h>
+#include <stdlib.h>
+#include <math.h>
 #include "HX711.h"
 
 #define KELEMBAPAN A0
@@ -55,8 +57,8 @@ unsigned long weighingStartedAt = 0;
 unsigned long lastWeightSampleAt = 0;
 float pendingWeightKg = 0.0;
 
-// Nilai awal kalibrasi untuk load cell 20kg (wajib disesuaikan nanti)
-float calibration_factor = 105.0; 
+// Nilai awal kalibrasi untuk load cell 20kg (dapat diubah dari pengaturan device)
+float calibration_factor = 105.0;
 
 // ==========================================
 // KONFIGURASI WIFI & SERVER API
@@ -66,7 +68,7 @@ float calibration_factor = 105.0;
 // const int   ws_port  = 80;
 // const char* static_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJkZXZpY2VfaWQiOjEsInVzZXJfbmFtZSI6IkVTUDgyNjZfVGltYmFuZ2FuIiwibG9rYXNpX2lkIjoxLCJwZXJ1c2FoYWFuX2lkIjoiMSIsIm5hbWFfcGVydXNhaGFhbiI6Ik5heWxhVG9vbHMiLCJlbWFpbCI6ImhlcnUucHJhc2V0aUBnbWFpbC5jb20iLCJuYW1hX2RhdGFiYXNlIjoiZW5jX1p4Y3RtOXlBdFZEYmN5eEZnTTJBNmJNTER4UWU3bmFxek13eHV6RXliU0tkQzl3Ylo5Zm5VRHI4IiwiaWF0IjoxNzk0OTY0NDY3fQ.Eas_s8eA_bSIwCa4i4hqZrL8VZ__88OIV5vruWjmQRg";
 
-const char* ws_host  = "192.168.1.8"; // HANYA IP / HOSTNAME SAJA, JANGAN pakai "http://"
+const char* ws_host  = "192.168.1.5"; // HANYA IP / HOSTNAME SAJA, JANGAN pakai "http://"
 const int   ws_port  = 3003;
 
 WebSocketsClient webSocket;
@@ -138,6 +140,7 @@ void setDefaultConfig() {
   config["wifissid"] = "Anerira";
   config["wifipwd"] = "naylatools.com";
   config["conter"] = 0;
+  config["calibration_factor"] = 105.0;
 }
 
 bool saveConfig() {
@@ -149,6 +152,7 @@ bool saveConfig() {
   config["wifissid"] = wifiSSID;
   config["wifipwd"] = wifiPassword;
   config["conter"] = counterBarangMasuk;
+  config["calibration_factor"] = calibration_factor;
 
   if (config.overflowed()) {
     Serial.println("[FS] Konfigurasi terlalu besar untuk disimpan");
@@ -219,11 +223,18 @@ bool loadConfig() {
     config["conter"] = 0;
     shouldSaveConfig = true;
   }
+  if (!config["calibration_factor"].is<float>() ||
+      !isfinite(config["calibration_factor"].as<float>()) ||
+      config["calibration_factor"].as<float>() == 0.0f) {
+    config["calibration_factor"] = 105.0;
+    shouldSaveConfig = true;
+  }
 
   staticToken = config["token"].as<String>();
   wifiSSID = config["wifissid"].as<String>();
   wifiPassword = config["wifipwd"].as<String>();
   counterBarangMasuk = config["conter"].as<uint32_t>();
+  calibration_factor = config["calibration_factor"].as<float>();
 
   if (shouldSaveConfig && !saveConfig()) {
     Serial.println("[FS] Gagal membuat atau memperbaiki file konfigurasi");
@@ -300,13 +311,14 @@ const char* updateDeviceSettings(JsonVariantConst rawSettings) {
   }
 
   JsonObjectConst settings = rawSettings.as<JsonObjectConst>();
-  if (!settings.containsKey("token") || settings.size() > 3) {
+  if (!settings.containsKey("token") || settings.size() > 4) {
     return "Token wajib disertakan dan field pengaturan harus valid";
   }
 
   String nextSSID = wifiSSID;
   String nextPassword = wifiPassword;
   String nextToken = staticToken;
+  float nextCalibrationFactor = calibration_factor;
 
   if (settings.containsKey("wifissid")) {
     if (!settings["wifissid"].is<const char*>()) {
@@ -342,16 +354,32 @@ const char* updateDeviceSettings(JsonVariantConst rawSettings) {
   }
   nextToken = token;
 
+  if (settings.containsKey("calibration_factor")) {
+    if (!settings["calibration_factor"].is<const char*>()) {
+      return "Nilai kalibrasi tidak valid";
+    }
+    const char* value = settings["calibration_factor"].as<const char*>();
+    char* end = nullptr;
+    float parsedValue = strtof(value, &end);
+    if (value == end || *end != '\0' || !isfinite(parsedValue) || parsedValue == 0.0f) {
+      return "Nilai kalibrasi harus berupa angka valid selain 0";
+    }
+    nextCalibrationFactor = parsedValue;
+  }
+
   String previousSSID = wifiSSID;
   String previousPassword = wifiPassword;
   String previousToken = staticToken;
+  float previousCalibrationFactor = calibration_factor;
   wifiSSID = nextSSID;
   wifiPassword = nextPassword;
   staticToken = nextToken;
+  calibration_factor = nextCalibrationFactor;
   if (!saveConfig()) {
     wifiSSID = previousSSID;
     wifiPassword = previousPassword;
     staticToken = previousToken;
+    calibration_factor = previousCalibrationFactor;
     return "Gagal menyimpan konfigurasi ke LittleFS";
   }
 
@@ -653,6 +681,7 @@ void loop() {
       telemetry["rssi"] = rssi;
       telemetry["reset_reason"] = resetRsn;
       telemetry["counter_barang"] = counterBarangMasuk;
+      telemetry["calibration_factor"] = calibration_factor;
       telemetry["uptime"] = millis() / 1000;
 
       char jsonBuffer[640];
